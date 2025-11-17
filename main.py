@@ -44,8 +44,10 @@ def fetch_weather_data(api_key, location_name):
     # ===============================================
 
     try:
-        response = requests.get(BASE_API_URL, params=params, timeout=10)
-        response.raise_for_status() 
+        # === 將 verify=False 加入 requests.get 呼叫中 ===
+        # ⚠️ 風險警告：這會禁用 SSL 驗證，降低安全性
+        response = requests.get(BASE_API_URL, params=params, timeout=10, verify=False) 
+        response.raise_for_status()
         data = response.json()
         
         if data.get('success') != 'true':
@@ -168,3 +170,4 @@ else:
     )
 
     st.sidebar.info("資料已緩存，每 1 小時更新一次。")
+
