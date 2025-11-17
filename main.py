@@ -1,157 +1,170 @@
-# main.py
-
+# streamlit_app.py
+import streamlit as st
 import requests
-import json
 import os
-from flask import Flask, render_template_string
-
-app = Flask(__name__)
+import pandas as pd
+import json
 
 # --- 設定 CWA API 資訊 ---
-# ⚠️ 部署到 Cloud Run 時，請通過環境變數傳遞金鑰，以確保安全
-# 示例： export CWA_API_KEY="YOUR_ACTUAL_API_KEY"
-API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-D0047-091?Authorization=CWA-FD731281-945E-4A82-83B3-A29D9938B48C&format=JSON&LocationName=%E9%9B%B2%E6%9E%97%E7%B8%A3"
+# 基礎 URL，不包含任何參數
+BASE_API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-D0047-091"
+CWA_API_KEY = "CWA-FD731281-945E-4A82-83B3-A29D9938B48C"
+# --- 應用程式標題和設定 ---
+st.set_page_config(page_title="臺灣鄉鎮一週天氣預報", layout="wide")
+st.title("📍 臺灣鄉鎮一週天氣預報 (CWA)")
+st.caption("資料來源：交通部中央氣象署")
 
-# --- 天氣資料抓取函式 (改寫自您的步驟 1) ---
+# 從 Streamlit Secrets 或環境變數安全地讀取 API 金鑰
+API_KEY = os.environ.get("CWA_API_KEY")
 
-def fetch_weather_data(url):
+if not API_KEY:
+    st.error("❌ 錯誤：中央氣象署 (CWA) API 金鑰未設定。")
+    st.markdown("請確認您已在 Streamlit Cloud 的 **Secrets** 中設定了 `CWA_API_KEY` 變數。")
+    st.stop() 
+
+# --- 資料抓取與處理函式 ---
+
+@st.cache_data(ttl=3600) # 緩存資料 1 小時 (3600 秒)
+def fetch_weather_data(api_key, location_name):
     """
-    抓取 CWA API 的 JSON 天氣資料並提取指定地點的預報。
+    抓取 CWA API 的 JSON 天氣資料並提取指定地點的預報，
+    將結果格式化為 Pandas DataFrame。
     """
+    
+    # === 使用 params 字典來構造您的完整 URL ===
+    # requests 會自動將這些參數轉換為 URL query string
+    params = {
+        'Authorization': api_key,
+        'format': 'JSON',
+        'locationName': location_name, # <-- 這是動態的地點
+        'elementName': 'WeatherDescription,MinT,MaxT,PoP12h'
+    }
+    # 範例：requests 會將此轉換為您想要的完整 URL (例如：雲林縣會被自動編碼)
+    # response = requests.get("BASE_API_URL?Authorization=...&format=JSON&LocationName=雲林縣&elementName=...")
+    # ===============================================
 
     try:
-        response = requests.get(url)
-        response.raise_for_status() # 對於 4xx 或 5xx 錯誤拋出異常
+        response = requests.get(BASE_API_URL, params=params, timeout=10)
+        response.raise_for_status() 
         data = response.json()
         
-        # 檢查 API 回應是否成功
         if data.get('success') != 'true':
-            return None, f"API 回應失敗: {data}"
+            error_msg = data.get('message', 'API 回應成功但狀態為非成功')
+            return None, f"API 請求失敗: {error_msg}"
 
-        # 解析資料結構
+        # --------------------- 資料解析邏輯 ---------------------
         records = data.get('records', {})
         locations = records.get('Locations', [])
         
         target_location_data = None
         for loc in locations:
             for loc_detail in loc.get('Location', []):
-                
-                target_location_data = loc_detail
-                break
+                if loc_detail.get('LocationName') == location_name: 
+                    target_location_data = loc_detail
+                    break
             if target_location_data:
                 break
                 
         if not target_location_data:
-            return None, f"找不到地點"
+            return None, f"找不到地點: {location_name}"
 
-        # 格式化預報資料 (將分散的元素按時間段合併)
         time_data = {}
         for element in target_location_data.get('WeatherElement', []):
             element_name = element.get('ElementName')
+            
+            element_map = {
+                '天氣預報綜合描述': '天氣描述',
+                '最高溫度': '最高溫',
+                '最低溫度': '最低溫',
+                '12小時降雨機率': '降雨機率',
+            }
+            display_name = element_map.get(element_name, element_name)
+            
             for time_period in element.get('Time', []):
                 start_time = time_period.get('StartTime')
                 end_time = time_period.get('EndTime')
                 key = (start_time, end_time)
                 
                 if key not in time_data:
-                    time_data[key] = {'StartTime': start_time, 'EndTime': end_time}
+                    time_data[key] = {
+                        '預報開始時間': start_time, 
+                        '預報結束時間': end_time
+                    }
                 
                 element_value = time_period.get('ElementValue', [{}])[0]
                 
-                if element_name == '天氣預報綜合描述':
-                    time_data[key]['WeatherDescription'] = element_value.get('WeatherDescription')
+                if element_name == '12小時降雨機率':
+                    value = element_value.get('ProbabilityOfPrecipitation')
+                    time_data[key][display_name] = f"{value}%"
                 elif element_name == '最高溫度':
-                    time_data[key]['MaxTemperature'] = element_value.get('MaxTemperature')
+                    value = element_value.get('MaxTemperature')
+                    time_data[key][display_name] = f"{value} °C"
                 elif element_name == '最低溫度':
-                    time_data[key]['MinTemperature'] = element_value.get('MinTemperature')
-                elif element_name == '12小時降雨機率':
-                    time_data[key]['PoP12h'] = element_value.get('ProbabilityOfPrecipitation')
+                    value = element_value.get('MinTemperature')
+                    time_data[key][display_name] = f"{value} °C"
+                elif element_name == '天氣預報綜合描述':
+                    value = element_value.get('WeatherDescription')
+                    time_data[key][display_name] = value
 
-        # 排序並輸出列表
-        forecasts = [time_data[key] for key in sorted(time_data.keys())]
+        # 轉換為 DataFrame
+        forecasts = list(time_data.values())
+        if not forecasts:
+            return None, "API 返回的資料結構中未包含預報時間段。"
         
-        return forecasts, None
+        df = pd.DataFrame(forecasts)
+        
+        df['預報時段'] = df['預報開始時間'].str[5:16].str.replace('T', ' ') + ' ~ ' + df['預報結束時間'].str[5:16].str.replace('T', ' ')
+        
+        final_columns = ['預報時段', '最高溫', '最低溫', '天氣描述', '降雨機率']
+        present_columns = [col for col in final_columns if col in df.columns]
+        
+        return df[present_columns], None
 
     except requests.exceptions.RequestException as e:
         return None, f"網路請求錯誤: {e}"
     except Exception as e:
-        # 捕捉解析或結構錯誤
         return None, f"發生資料處理錯誤: {e}"
 
 
-# --- Flask 路由和網頁顯示 ---
+# --- Streamlit 應用程式主邏輯 ---
 
-@app.route('/')
-def weather_display():
-    """
-    主頁面路由，抓取並顯示天氣預報。
-    """
-    forecasts, error = fetch_weather_data(API_URL)
-    
-    if error:
-        # 如果有錯誤，顯示錯誤訊息
-        html_content = f"""
-        <html>
-        <head><title> 天氣預報</title></head>
-        <body>
-            <h1>⛈️ 天氣資料載入失敗</h1>
-            <p style="color: red;">{error}</p>
-        </body>
-        </html>
-        """
-    else:
-        # 如果成功，生成表格 HTML
-        table_rows = ""
-        for item in forecasts:
-            # 簡化時間顯示
-            start_time = item.get('StartTime', 'N/A')[5:16].replace('T', ' ')
-            end_time = item.get('EndTime', 'N/A')[5:16].replace('T', ' ')
-            
-            table_rows += f"""
-            <tr>
-                <td>{start_time} - {end_time}</td>
-                <td>{item.get('MaxTemperature', 'N/A')} / {item.get('MinTemperature', 'N/A')} °C</td>
-                <td>{item.get('WeatherDescription', 'N/A')}</td>
-                <td>{item.get('PoP12h', 'N/A')}%</td>
-            </tr>
-            """
-            
-        html_content = f"""
-        <html>
-        <head>
-            <title> 天氣預報</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                h1 {{ color: #1e88e5; }}
-                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-                th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-                th {{ background-color: #f2f2f2; }}
-                tr:nth-child(even) {{ background-color: #f9f9f9; }}
-            </style>
-        </head>
-        <body>
-            <h1>📍 未來一週天氣預報</h1>
-            <table>
-                <thead>
-                    <tr>
-                        <th>預報時段 (月-日 時:分)</th>
-                        <th>溫度 (高/低)</th>
-                        <th>天氣描述</th>
-                        <th>12小時降雨機率</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {table_rows}
-                </tbody>
-            </table>
-            <p>資料來源：中央氣象署</p>
-        </body>
-        </html>
-        """
-    
-    # render_template_string 用於直接渲染內嵌的 HTML 字符串
-    return render_template_string(html_content)
+available_locations = [
+    "雲林縣", "臺北市", "新北市", "桃園市", "臺中市", "臺南市", "高雄市", 
+    "基隆市", "新竹市", "新竹縣", "苗栗縣", "彰化縣", "南投縣", "嘉義市", 
+    "嘉義縣", "屏東縣", "宜蘭縣", "花蓮縣", "臺東縣", "澎湖縣", "金門縣", "連江縣"
+]
 
-if __name__ == '__main__':
-    # 在本地端運行，預設端口為 5000
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+default_location_index = available_locations.index("雲林縣")
+
+# 側邊欄選擇器
+selected_location = st.sidebar.selectbox(
+    '選擇縣市：',
+    options=available_locations,
+    index=default_location_index
+)
+
+# 執行資料抓取
+with st.spinner(f'正在抓取 {selected_location} 的天氣預報...'):
+    weather_df, error_message = fetch_weather_data(API_KEY, selected_location)
+
+# 顯示結果
+if error_message:
+    st.error(f"⚠️ 資料抓取失敗: {error_message}")
+else:
+    st.subheader(f"✅ {selected_location} 最新一週預報")
+    
+    # 處理溫度進度條的 min/max value
+    min_temp_limit = 5
+    max_temp_limit = 40
+
+    st.dataframe(
+        weather_df, 
+        use_container_width=True,
+        column_config={
+            "最高溫": st.column_config.ProgressColumn("最高溫", format="%g °C", min_value=min_temp_limit, max_value=max_temp_limit),
+            "最低溫": st.column_config.ProgressColumn("最低溫", format="%g °C", min_value=min_temp_limit, max_value=max_temp_limit),
+            "降雨機率": st.column_config.ProgressColumn("降雨機率", format="%g %%", help="12小時累積降雨機率", min_value=0, max_value=100)
+        }
+    )
+
+    st.sidebar.info("資料已緩存，每 1 小時更新一次。")
