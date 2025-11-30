@@ -7,6 +7,10 @@ import json
 import urllib3
 from datetime import datetime, timezone # 確保有 timezone
 
+# 🌟 新增官方套件導入
+from google import genai
+from google.genai.errors import APIError # 用於處理 API 錯誤
+
 # 由於您可能在部署時遇到 SSL 憑證問題，暫時禁用警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -144,12 +148,26 @@ def fetch_weather_data(api_key, location_name):
     except Exception as e:
         return None, f"發生資料處理錯誤: {e}"
 
-# --- 呼叫 Gemini API 總結的函式 (修正版，移除 config 結構) ---
+@st.cache_resource
+def get_gemini_client():
+    """初始化並返回 Gemini Client。"""
+    # client 會自動從環境變數 GEMINI_API_KEY 讀取金鑰
+    try:
+        # 使用 st.secrets 作為首選，如果沒有則會嘗試 os.environ
+        api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return None
+        return genai.Client(api_key=api_key)
+    except Exception as e:
+        st.error(f"無法初始化 Gemini Client: {e}")
+        return None
+
 def generate_summary(weather_data_text):
-    """呼叫 Gemini API 產生天氣總結與穿搭建議。"""
+    """使用 Gemini SDK 產生天氣總結與穿搭建議。"""
     
-    if not GEMINI_API_KEY:
-        return None, "Gemini API 金鑰未設定。請檢查 Secrets/環境變數。"
+    client = get_gemini_client()
+    if client is None:
+        return None, "Gemini API 金鑰未設定或 Client 初始化失敗。"
 
     # 設置給 AI 的提示 (這部分不變)
     prompt = f"""
@@ -161,41 +179,25 @@ def generate_summary(weather_data_text):
     請確保你的總結**限定在 150 字以內**。
     """
     
-    headers = {
-        "X-Goog-Api-Key": GEMINI_API_KEY.strip() # 將金鑰作為 Header 傳遞，並清理空格
-    }
-    
-    full_url = GEMINI_API_URL 
-    
-    # 🌟 關鍵修正：將 temperature 和 maxOutputTokens 提升到頂層
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "temperature": 0.5,             # 修正後的配置位置
-        "maxOutputTokens": 200          # 修正後的配置位置
-    }
-    
     try:
-        # 發送 POST 請求
-        response = requests.post(full_url, headers=headers, data=json.dumps(payload), timeout=30)
-        response.raise_for_status() # 檢查 HTTP 狀態碼
+        # 🌟 使用官方 SDK 呼叫，配置參數直接傳遞
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config={
+                "temperature": 0.5,
+                "max_output_tokens": 200 # 注意：SDK 使用 max_output_tokens
+            }
+        )
         
-        result = response.json()
+        # 返回 AI 輸出的文字
+        return response.text, None
         
-        # 解析 AI 輸出的文字
-        return result['candidates'][0]['content']['parts'][0]['text'], None
-        
-    except requests.exceptions.HTTPError as e:
-        # 對 API 錯誤進行處理
-        try:
-            error_details = response.json().get('error', {}).get('message', '無詳細 API 錯誤訊息')
-        except:
-            error_details = '無法解析 API 錯誤響應'
-
-        return None, f"Gemini API 請求失敗 (HTTP {e.response.status_code}): {error_details}"
-    except requests.exceptions.RequestException as e:
-        return None, f"Gemini API 連線錯誤或逾時: {e}"
+    except APIError as e:
+        return None, f"Gemini API 請求失敗 (SDK 錯誤): {e}"
     except Exception as e:
-        return None, f"解析 Gemini 響應或結構錯誤: {e}"
+        return None, f"發生意外錯誤: {e}"
+        
 # --- 5. Streamlit 應用程式主邏輯 ---
 
 available_locations = [
@@ -255,6 +257,7 @@ else:
             else:
                 st.subheader("💡 AI 天氣總結與穿搭指南")
                 st.markdown(summary_text)
+
 
 
 
