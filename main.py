@@ -5,7 +5,7 @@ import os
 import pandas as pd
 import json
 import urllib3 # 處理 SSL 警告
-from datetime import datetime
+from datetime import datetime, timezone
 
 # 由於您可能在部署時遇到 SSL 憑證問題，暫時禁用警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -90,29 +90,23 @@ def fetch_weather_data(api_key, location_name):
                 key = (start_time, end_time)
                 
                 if key not in time_data:
-                    # 簡化時間格式
-                    start_time_fmt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S').strftime('%m/%d %H:%M')
-                    end_time_fmt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S').strftime('%H:%M')
+                    # 使用 datetime.fromisoformat 解析帶有 T 和時區的字串
+                    try:
+                        dt_start = datetime.fromisoformat(start_time)
+                        dt_end = datetime.fromisoformat(end_time)
+                    except ValueError:
+                        # 如果 API 格式突然變更，捕獲錯誤
+                        raise ValueError(f"time data '{start_time}' does not match expected ISO format.")
+
+                    # 將時間格式化為 Streamlit 顯示所需的樣式 (例如：'11/30 12:00')
+                    start_time_fmt = dt_start.strftime('%m/%d %H:%M')
+                    end_time_fmt = dt_end.strftime('%H:%M')
+                    
                     time_data[key] = {
                         '預報開始時間': start_time, 
                         '預報結束時間': end_time,
                         '預報時段': f"{start_time_fmt} - {end_time_fmt}"
                     }
-                
-                element_value = time_period.get('ElementValue', [{}])[0]
-                
-                if element_name == '12小時降雨機率':
-                    value = element_value.get('ProbabilityOfPrecipitation')
-                    time_data[key][display_name] = f"{value}%"
-                elif element_name == '最高溫度':
-                    value = element_value.get('MaxTemperature')
-                    time_data[key][display_name] = f"{value} °C"
-                elif element_name == '最低溫度':
-                    value = element_value.get('MinTemperature')
-                    time_data[key][display_name] = f"{value} °C"
-                elif element_name == '天氣預報綜合描述':
-                    value = element_value.get('WeatherDescription')
-                    time_data[key][display_name] = value
 
         # 轉換為 DataFrame
         forecasts = list(time_data.values())
@@ -232,3 +226,4 @@ else:
             else:
                 st.subheader("💡 AI 天氣總結與穿搭指南")
                 st.markdown(summary_text) # 顯示 AI 輸出的文字
+
