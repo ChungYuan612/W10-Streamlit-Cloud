@@ -4,48 +4,50 @@ import requests
 import os
 import pandas as pd
 import json
+import urllib3 # 處理 SSL 警告
+from datetime import datetime
+
+# 由於您可能在部署時遇到 SSL 憑證問題，暫時禁用警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 設定 CWA API 資訊 ---
-# 基礎 URL，不包含任何參數
 BASE_API_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-D0047-091"
-CWA_API_KEY = "CWA-FD731281-945E-4A82-83B3-A29D9938B48C"
+
+# ⚠️ CWA 金鑰：程式碼優先使用環境變數（Secrets），若無則使用硬編碼值。
+CWA_AUTH_KEY_HARDCODED = "CWA-FD731281-945E-4A82-83B3-A29D9938B48C"
+CWA_API_KEY = os.environ.get("CWA_API_KEY", CWA_AUTH_KEY_HARDCODED)
+
+# --- 設定 GEMINI API 資訊 ---
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent"
+# ⚠️ GEMINI 金鑰：必須從環境變數或 Secrets 讀取！
+GEMINI_API_KEY = "AIzaSyBJl2iNRzF-xRANQNiVWoFZz6_1oG0nQOs"
+
+
 # --- 應用程式標題和設定 ---
-st.set_page_config(page_title="臺灣鄉鎮一週天氣預報", layout="wide")
-st.title("📍 臺灣鄉鎮一週天氣預報 (CWA)")
+st.set_page_config(page_title="臺灣鄉鎮一週天氣預報與 AI 總結", layout="wide")
+st.title("📍 臺灣鄉鎮一週天氣預報 (CWA) 與 AI 總結")
 st.caption("資料來源：交通部中央氣象署")
 
-# 從 Streamlit Secrets 或環境變數安全地讀取 API 金鑰
-API_KEY = os.environ.get("CWA_API_KEY")
-
-if not API_KEY:
+# 檢查 CWA 金鑰（使用整合後的 CWA_API_KEY）
+if not CWA_API_KEY:
     st.error("❌ 錯誤：中央氣象署 (CWA) API 金鑰未設定。")
-    st.markdown("請確認您已在 Streamlit Cloud 的 **Secrets** 中設定了 `CWA_API_KEY` 變數。")
+    st.markdown("請確認您已在 Streamlit Cloud 的 **Secrets** 中設定 `CWA_API_KEY` 變數。")
     st.stop() 
 
 # --- 資料抓取與處理函式 ---
-
 @st.cache_data(ttl=3600) # 緩存資料 1 小時 (3600 秒)
 def fetch_weather_data(api_key, location_name):
-    """
-    抓取 CWA API 的 JSON 天氣資料並提取指定地點的預報，
-    將結果格式化為 Pandas DataFrame。
-    """
+    """抓取 CWA API 的 JSON 天氣資料並提取指定地點的預報。"""
     
-    # === 使用 params 字典來構造您的完整 URL ===
-    # requests 會自動將這些參數轉換為 URL query string
     params = {
         'Authorization': api_key,
         'format': 'JSON',
-        'locationName': location_name, # <-- 這是動態的地點
+        'locationName': location_name, 
         'elementName': 'WeatherDescription,MinT,MaxT,PoP12h'
     }
-    # 範例：requests 會將此轉換為您想要的完整 URL (例如：雲林縣會被自動編碼)
-    # response = requests.get("BASE_API_URL?Authorization=...&format=JSON&LocationName=雲林縣&elementName=...")
-    # ===============================================
 
     try:
-        # === 將 verify=False 加入 requests.get 呼叫中 ===
-        # ⚠️ 風險警告：這會禁用 SSL 驗證，降低安全性
+        # 使用 verify=False 繞過 SSL 憑證驗證問題
         response = requests.get(BASE_API_URL, params=params, timeout=10, verify=False) 
         response.raise_for_status()
         data = response.json()
@@ -88,9 +90,13 @@ def fetch_weather_data(api_key, location_name):
                 key = (start_time, end_time)
                 
                 if key not in time_data:
+                    # 簡化時間格式
+                    start_time_fmt = datetime.strptime(start_time, '%Y-%m-%d %H:%M:%S').strftime('%m/%d %H:%M')
+                    end_time_fmt = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S').strftime('%H:%M')
                     time_data[key] = {
                         '預報開始時間': start_time, 
-                        '預報結束時間': end_time
+                        '預報結束時間': end_time,
+                        '預報時段': f"{start_time_fmt} - {end_time_fmt}"
                     }
                 
                 element_value = time_period.get('ElementValue', [{}])[0]
@@ -115,8 +121,6 @@ def fetch_weather_data(api_key, location_name):
         
         df = pd.DataFrame(forecasts)
         
-        df['預報時段'] = df['預報開始時間'].str[5:16].str.replace('T', ' ') + ' ~ ' + df['預報結束時間'].str[5:16].str.replace('T', ' ')
-        
         final_columns = ['預報時段', '最高溫', '最低溫', '天氣描述', '降雨機率']
         present_columns = [col for col in final_columns if col in df.columns]
         
@@ -127,8 +131,49 @@ def fetch_weather_data(api_key, location_name):
     except Exception as e:
         return None, f"發生資料處理錯誤: {e}"
 
+# --- 4. 呼叫 Gemini API 總結的函式 (新增) ---
+def generate_summary(weather_data_text):
+    """呼叫 Gemini API 產生天氣總結與穿搭建議。"""
+    
+    if not GEMINI_API_KEY:
+        return None, "Gemini API 金鑰未設定。請檢查 Secrets/環境變數。"
 
-# --- Streamlit 應用程式主邏輯 ---
+    # 設置給 AI 的提示
+    prompt = f"""
+    這是台灣某地區未來一週的天氣預報資料（以表格純文字呈現）：
+    --- 資料 ---
+    {weather_data_text}
+    ---
+    請你扮演天氣主播，根據這份資料，用口語化、生動的方式，簡潔地總結未來的天氣趨勢（例如：氣溫變化、晴雨狀況），並提供實用且具體的穿搭建議。
+    請確保你的總結**限定在 150 字以內**。
+    """
+    
+    headers = {"Content-Type": "application/json"}
+    full_url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+    
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "config": {
+            "temperature": 0.5, 
+            "maxOutputTokens": 200
+        }
+    }
+    
+    try:
+        response = requests.post(full_url, headers=headers, data=json.dumps(payload), timeout=30)
+        response.raise_for_status() 
+        result = response.json()
+        
+        # 解析 AI 輸出的文字
+        return result['candidates'][0]['content']['parts'][0]['text'], None
+        
+    except requests.exceptions.RequestException as e:
+        return None, f"Gemini API 請求錯誤或連線逾時: {e}"
+    except Exception as e:
+        return None, f"解析 Gemini 響應錯誤: {e}"
+
+
+# --- 5. Streamlit 應用程式主邏輯 (整合 AI 部分) ---
 
 available_locations = [
     "雲林縣", "臺北市", "新北市", "桃園市", "臺中市", "臺南市", "高雄市", 
@@ -147,7 +192,7 @@ selected_location = st.sidebar.selectbox(
 
 # 執行資料抓取
 with st.spinner(f'正在抓取 {selected_location} 的天氣預報...'):
-    weather_df, error_message = fetch_weather_data(API_KEY, selected_location)
+    weather_df, error_message = fetch_weather_data(CWA_API_KEY, selected_location)
 
 # 顯示結果
 if error_message:
@@ -168,6 +213,22 @@ else:
             "降雨機率": st.column_config.ProgressColumn("降雨機率", format="%g %%", help="12小時累積降雨機率", min_value=0, max_value=100)
         }
     )
-
+    
     st.sidebar.info("資料已緩存，每 1 小時更新一次。")
+    
+    st.markdown("---")
+    
+    # --- AI 總結按鈕和顯示區塊 (新增) ---
+    
+    # 將 DataFrame 轉換為 AI 容易閱讀的文字格式
+    weather_text_for_ai = weather_df.to_string(index=False) 
 
+    if st.button("🤖 點此連線 AI 總結天氣與穿搭建議", use_container_width=True, type="primary"):
+        with st.spinner("正在連線至 Gemini 產生總結，請稍候..."):
+            summary_text, gemini_error = generate_summary(weather_text_for_ai)
+            
+            if gemini_error:
+                st.error(gemini_error)
+            else:
+                st.subheader("💡 AI 天氣總結與穿搭指南")
+                st.markdown(summary_text) # 顯示 AI 輸出的文字
