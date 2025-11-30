@@ -144,7 +144,7 @@ def fetch_weather_data(api_key, location_name):
     except Exception as e:
         return None, f"發生資料處理錯誤: {e}"
 
-# --- 呼叫 Gemini API 總結的函式 (修正版) ---
+# --- 呼叫 Gemini API 總結的函式 (修正版，移除 config 結構) ---
 def generate_summary(weather_data_text):
     """呼叫 Gemini API 產生天氣總結與穿搭建議。"""
     
@@ -161,27 +161,23 @@ def generate_summary(weather_data_text):
     請確保你的總結**限定在 150 字以內**。
     """
     
-    # 修正 Header：移除 Content-Type (requests 會自動處理)，並加入 X-Goog-Api-Key
     headers = {
-        # 'Content-Type': 'application/json', # requests 會自動處理
-        "X-Goog-Api-Key": GEMINI_API_KEY.strip() # 修正：將金鑰作為 Header 傳遞，並清理空格
+        "X-Goog-Api-Key": GEMINI_API_KEY.strip() # 將金鑰作為 Header 傳遞，並清理空格
     }
     
-    # 修正 URL：不再將金鑰放在 URL 參數中
     full_url = GEMINI_API_URL 
     
+    # 🌟 關鍵修正：將 temperature 和 maxOutputTokens 提升到頂層
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "config": {
-            "temperature": 0.5, 
-            "maxOutputTokens": 200
-        }
+        "temperature": 0.5,             # 修正後的配置位置
+        "maxOutputTokens": 200          # 修正後的配置位置
     }
     
     try:
         # 發送 POST 請求
         response = requests.post(full_url, headers=headers, data=json.dumps(payload), timeout=30)
-        response.raise_for_status() # 檢查 HTTP 狀態碼 (這會捕獲 400 錯誤)
+        response.raise_for_status() # 檢查 HTTP 狀態碼
         
         result = response.json()
         
@@ -189,7 +185,7 @@ def generate_summary(weather_data_text):
         return result['candidates'][0]['content']['parts'][0]['text'], None
         
     except requests.exceptions.HTTPError as e:
-        # 對 400 Bad Request 進行特殊處理，提供更詳細的錯誤信息
+        # 對 API 錯誤進行處理
         try:
             error_details = response.json().get('error', {}).get('message', '無詳細 API 錯誤訊息')
         except:
@@ -200,7 +196,6 @@ def generate_summary(weather_data_text):
         return None, f"Gemini API 連線錯誤或逾時: {e}"
     except Exception as e:
         return None, f"解析 Gemini 響應或結構錯誤: {e}"
-
 # --- 5. Streamlit 應用程式主邏輯 ---
 
 available_locations = [
@@ -260,4 +255,5 @@ else:
             else:
                 st.subheader("💡 AI 天氣總結與穿搭指南")
                 st.markdown(summary_text)
+
 
