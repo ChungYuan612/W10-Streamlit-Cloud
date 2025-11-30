@@ -10,6 +10,7 @@ from datetime import datetime, timezone # 確保有 timezone
 # 🌟 新增官方套件導入
 from google import genai
 from google.genai.errors import APIError # 用於處理 API 錯誤
+from google.genai import types # 🌟 新增導入 types
 
 # 由於您可能在部署時遇到 SSL 憑證問題，暫時禁用警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -260,6 +261,7 @@ else:
             else:
                 st.subheader("💡 AI 天氣總結與穿搭指南")
                 st.markdown(summary_text)
+
 
 
 
