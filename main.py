@@ -154,7 +154,7 @@ def get_gemini_client():
     # client 會自動從環境變數 GEMINI_API_KEY 讀取金鑰
     try:
         # 使用 st.secrets 作為首選，如果沒有則會嘗試 os.environ
-        api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        api_key = GEMINI_API_KEY
         if not api_key:
             return None
         return genai.Client(api_key=api_key)
@@ -257,6 +257,7 @@ else:
             else:
                 st.subheader("💡 AI 天氣總結與穿搭指南")
                 st.markdown(summary_text)
+
 
 
 
