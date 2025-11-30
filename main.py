@@ -144,14 +144,14 @@ def fetch_weather_data(api_key, location_name):
     except Exception as e:
         return None, f"發生資料處理錯誤: {e}"
 
-# --- 4. 呼叫 Gemini API 總結的函式 (新增) ---
+# --- 呼叫 Gemini API 總結的函式 (修正版) ---
 def generate_summary(weather_data_text):
     """呼叫 Gemini API 產生天氣總結與穿搭建議。"""
     
     if not GEMINI_API_KEY:
         return None, "Gemini API 金鑰未設定。請檢查 Secrets/環境變數。"
 
-    # 設置給 AI 的提示
+    # 設置給 AI 的提示 (這部分不變)
     prompt = f"""
     這是台灣某地區未來一週的天氣預報資料（以表格純文字呈現）：
     --- 資料 ---
@@ -161,8 +161,14 @@ def generate_summary(weather_data_text):
     請確保你的總結**限定在 150 字以內**。
     """
     
-    headers = {"Content-Type": "application/json"}
-    full_url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+    # 修正 Header：移除 Content-Type (requests 會自動處理)，並加入 X-Goog-Api-Key
+    headers = {
+        # 'Content-Type': 'application/json', # requests 會自動處理
+        "X-Goog-Api-Key": GEMINI_API_KEY.strip() # 修正：將金鑰作為 Header 傳遞，並清理空格
+    }
+    
+    # 修正 URL：不再將金鑰放在 URL 參數中
+    full_url = GEMINI_API_URL 
     
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -173,18 +179,27 @@ def generate_summary(weather_data_text):
     }
     
     try:
+        # 發送 POST 請求
         response = requests.post(full_url, headers=headers, data=json.dumps(payload), timeout=30)
-        response.raise_for_status() 
+        response.raise_for_status() # 檢查 HTTP 狀態碼 (這會捕獲 400 錯誤)
+        
         result = response.json()
         
         # 解析 AI 輸出的文字
         return result['candidates'][0]['content']['parts'][0]['text'], None
         
-    except requests.exceptions.RequestException as e:
-        return None, f"Gemini API 請求錯誤或連線逾時: {e}"
-    except Exception as e:
-        return None, f"解析 Gemini 響應錯誤: {e}"
+    except requests.exceptions.HTTPError as e:
+        # 對 400 Bad Request 進行特殊處理，提供更詳細的錯誤信息
+        try:
+            error_details = response.json().get('error', {}).get('message', '無詳細 API 錯誤訊息')
+        except:
+            error_details = '無法解析 API 錯誤響應'
 
+        return None, f"Gemini API 請求失敗 (HTTP {e.response.status_code}): {error_details}"
+    except requests.exceptions.RequestException as e:
+        return None, f"Gemini API 連線錯誤或逾時: {e}"
+    except Exception as e:
+        return None, f"解析 Gemini 響應或結構錯誤: {e}"
 
 # --- 5. Streamlit 應用程式主邏輯 ---
 
@@ -245,3 +260,4 @@ else:
             else:
                 st.subheader("💡 AI 天氣總結與穿搭指南")
                 st.markdown(summary_text)
+
