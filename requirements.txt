@@ -2,3 +2,4 @@ requests
 streamlit
 pandas
 urllib3
+google-genai
