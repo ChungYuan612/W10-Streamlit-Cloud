@@ -18,7 +18,7 @@ CWA_AUTH_KEY_HARDCODED = "CWA-FD731281-945E-4A82-83B3-A29D9938B48C"
 CWA_API_KEY = os.environ.get("CWA_API_KEY", CWA_AUTH_KEY_HARDCODED)
 
 # --- 設定 GEMINI API 資訊 ---
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent"
 # ⚠️ GEMINI 金鑰：必須從環境變數或 Secrets 讀取！
 GEMINI_API_KEY = "AIzaSyBJl2iNRzF-xRANQNiVWoFZz6_1oG0nQOs"
 
@@ -255,5 +255,6 @@ else:
             else:
                 st.subheader("💡 AI 天氣總結與穿搭指南")
                 st.markdown(summary_text)
+
 
 
