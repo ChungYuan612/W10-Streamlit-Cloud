@@ -4,8 +4,8 @@ import requests
 import os
 import pandas as pd
 import json
-import urllib3 # 處理 SSL 警告
-from datetime import datetime, timezone
+import urllib3
+from datetime import datetime, timezone # 確保有 timezone
 
 # 由於您可能在部署時遇到 SSL 憑證問題，暫時禁用警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -18,7 +18,7 @@ CWA_AUTH_KEY_HARDCODED = "CWA-FD731281-945E-4A82-83B3-A29D9938B48C"
 CWA_API_KEY = os.environ.get("CWA_API_KEY", CWA_AUTH_KEY_HARDCODED)
 
 # --- 設定 GEMINI API 資訊 ---
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 # ⚠️ GEMINI 金鑰：必須從環境變數或 Secrets 讀取！
 GEMINI_API_KEY = "AIzaSyBJl2iNRzF-xRANQNiVWoFZz6_1oG0nQOs"
 
@@ -72,6 +72,7 @@ def fetch_weather_data(api_key, location_name):
         if not target_location_data:
             return None, f"找不到地點: {location_name}"
 
+        # 這是修正後的資料提取邏輯，將所有元素的值正確放入 time_data
         time_data = {}
         for element in target_location_data.get('WeatherElement', []):
             element_name = element.get('ElementName')
@@ -87,26 +88,40 @@ def fetch_weather_data(api_key, location_name):
             for time_period in element.get('Time', []):
                 start_time = time_period.get('StartTime')
                 end_time = time_period.get('EndTime')
-                key = (start_time, end_time)
+                key = (start_time, end_time) # 使用原始時間字串作為 key
                 
                 if key not in time_data:
-                    # 使用 datetime.fromisoformat 解析帶有 T 和時區的字串
+                    # 解析並格式化時間
                     try:
                         dt_start = datetime.fromisoformat(start_time)
                         dt_end = datetime.fromisoformat(end_time)
                     except ValueError:
-                        # 如果 API 格式突然變更，捕獲錯誤
-                        raise ValueError(f"time data '{start_time}' does not match expected ISO format.")
+                        return None, f"時間格式解析錯誤: {start_time}"
 
-                    # 將時間格式化為 Streamlit 顯示所需的樣式 (例如：'11/30 12:00')
                     start_time_fmt = dt_start.strftime('%m/%d %H:%M')
                     end_time_fmt = dt_end.strftime('%H:%M')
                     
                     time_data[key] = {
-                        '預報開始時間': start_time, 
-                        '預報結束時間': end_time,
-                        '預報時段': f"{start_time_fmt} - {end_time_fmt}"
+                        '預報時段': f"{start_time_fmt} - {end_time_fmt}",
+                        '預報開始時間': start_time, # 保留原始時間字串供內部使用
+                        '預報結束時間': end_time    # 保留原始時間字串供內部使用
                     }
+                
+                element_value = time_period.get('ElementValue', [{}])[0]
+                
+                # 根據 element_name 提取對應的值
+                if element_name == '12小時降雨機率':
+                    value = element_value.get('ProbabilityOfPrecipitation')
+                    time_data[key][display_name] = f"{value}%"
+                elif element_name == '最高溫度':
+                    value = element_value.get('MaxTemperature')
+                    time_data[key][display_name] = f"{value} °C"
+                elif element_name == '最低溫度':
+                    value = element_value.get('MinTemperature')
+                    time_data[key][display_name] = f"{value} °C"
+                elif element_name == '天氣預報綜合描述':
+                    value = element_value.get('WeatherDescription')
+                    time_data[key][display_name] = value
 
         # 轉換為 DataFrame
         forecasts = list(time_data.values())
@@ -115,10 +130,14 @@ def fetch_weather_data(api_key, location_name):
         
         df = pd.DataFrame(forecasts)
         
+        # 確保最終 DataFrame 包含所有預期的欄位，並按照順序
         final_columns = ['預報時段', '最高溫', '最低溫', '天氣描述', '降雨機率']
-        present_columns = [col for col in final_columns if col in df.columns]
+        # 檢查所有預期的欄位是否都在 df 中，並補上缺失的欄位（用 NaN）
+        for col in final_columns:
+            if col not in df.columns:
+                df[col] = pd.NA # 或者 '' 或是 'N/A'
         
-        return df[present_columns], None
+        return df[final_columns], None # 確保返回指定順序的欄位
 
     except requests.exceptions.RequestException as e:
         return None, f"網路請求錯誤: {e}"
@@ -167,7 +186,7 @@ def generate_summary(weather_data_text):
         return None, f"解析 Gemini 響應錯誤: {e}"
 
 
-# --- 5. Streamlit 應用程式主邏輯 (整合 AI 部分) ---
+# --- 5. Streamlit 應用程式主邏輯 ---
 
 available_locations = [
     "雲林縣", "臺北市", "新北市", "桃園市", "臺中市", "臺南市", "高雄市", 
@@ -212,7 +231,7 @@ else:
     
     st.markdown("---")
     
-    # --- AI 總結按鈕和顯示區塊 (新增) ---
+    # --- AI 總結按鈕和顯示區塊 ---
     
     # 將 DataFrame 轉換為 AI 容易閱讀的文字格式
     weather_text_for_ai = weather_df.to_string(index=False) 
@@ -225,5 +244,4 @@ else:
                 st.error(gemini_error)
             else:
                 st.subheader("💡 AI 天氣總結與穿搭指南")
-                st.markdown(summary_text) # 顯示 AI 輸出的文字
-
+                st.markdown(summary_text)
